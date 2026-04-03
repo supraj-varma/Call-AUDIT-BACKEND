@@ -14,7 +14,7 @@ from typing import List, Dict, Optional, Any, cast, TypedDict
 from models.types import CounselorStats
 from models.schemas import SubtitleResult, MinimalAnalysisResult, TranscribeRequest
 
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks # type: ignore
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks, Request # type: ignore
 from fastapi.middleware.cors import CORSMiddleware # type: ignore
 from fastapi.responses import JSONResponse # type: ignore
 from pydantic import BaseModel, Field # type: ignore
@@ -204,7 +204,7 @@ TRANSCRIPT:
 TASKS:
 1. Categorize the call accurately using these STRICT rules:
    - If the caller is asking for sponsorship, funding for events, hackathon support, or college marketing collaborations, it MUST be 'Sponsorship'.
-   - If it's about paying fees or balance inquiries, it's 'Fee Follow-up'.
+   - If it's about paying fees or balance inquiries (Existing Student), it's 'CG-Student'.
    - If it's a new student asking about courses/joining, it's 'Lead Inquiry'.
    - If there's a problem or grievance, it's 'Complaint'.
    - Otherwise, use 'General Support'.
@@ -219,7 +219,7 @@ TASKS:
    - 'Undecided': General inquiry, needs more info, neutral intent.
    - 'Not Interested': Explicitly declines.
    - Note: For Sponsorship calls, this refers to if they are willing to collaborate/partner.
-8. Extract the exact names of the counselor and the caller from the transcript if available.
+8. Extract the exact names of the counselor and the caller if available. IF NOT mentioned, return null (do not use placeholders).
 
 Output ONLY the requested JSON."""
     return await client.aio.models.generate_content(
@@ -639,7 +639,7 @@ async def perform_drive_sync(background_tasks: Optional[BackgroundTasks] = None)
                 c_phone, cust_phone, archive_date = parse_drive_filename(f_name)
                 
                 # B. Identity Verification (Lookup)
-                counselor_name = lookup_personnel_by_phone(c_phone) or "Unknown Personnel"
+                counselor_name = lookup_personnel_by_phone(c_phone) or c_phone or "Unknown Personnel"
                 customer_name = cust_phone or "Unknown Entity"
                 display_date = time.strftime('%Y-%m-%d')
 
@@ -863,6 +863,111 @@ async def get_counselor_analytics():
         })
     
     return JSONResponse(content=list(stats.values()))
+
+# --- Real-Time Audit Lock System ---
+import time
+AUDIT_CLAIMS_FILE = os.path.join(tempfile.gettempdir(), "audit_claims_cache.json")
+AUDIT_HISTORY_FILE = os.path.join(tempfile.gettempdir(), "audit_history_cache.json")
+
+def _load_claims():
+    if os.path.exists(AUDIT_CLAIMS_FILE):
+        try:
+            with open(AUDIT_CLAIMS_FILE) as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+def _save_claims(claims):
+    with open(AUDIT_CLAIMS_FILE, "w") as f:
+        json.dump(claims, f)
+
+LOCK_TIMEOUT = 15 * 60
+
+@app.get("/api/audit/claims")
+async def get_audit_claims():
+    claims = _load_claims()
+    # No timeout expiration as requested by user
+    return JSONResponse(content=claims)
+
+@app.post("/api/audit/claim")
+async def claim_audit(req: Request):
+    data = await req.json()
+    job_id = data.get("job_id")
+    email = data.get("auditor_email")
+    name = data.get("auditor_name")
+    
+    claims = _load_claims()
+    now = time.time()
+    
+    if job_id in claims:
+        claim = claims[job_id]
+        if claim.get("auditor_email") != email:
+            raise HTTPException(400, f"Locked by {claim.get('auditor_name', 'another auditor')}")
+            
+    claims[job_id] = {
+        "auditor_email": email,
+        "auditor_name": name,
+        "timestamp": now
+    }
+    _save_claims(claims)
+    return JSONResponse(content={"status": "locked", "job_id": job_id})
+
+@app.post("/api/audit/release")
+async def release_audit(req: Request):
+    data = await req.json()
+    job_id = data.get("job_id")
+    email = data.get("auditor_email")
+    
+    claims = _load_claims()
+    if job_id in claims and claims[job_id].get("auditor_email") == email:
+        del claims[job_id]
+        _save_claims(claims)
+        return JSONResponse(content={"status": "released", "job_id": job_id})
+    return JSONResponse(content={"status": "ignored"})
+
+@app.post("/api/audit/submit")
+async def submit_audit(req: Request):
+    data = await req.json()
+    job_id = data.get("job_id")
+    
+    claims = _load_claims()
+    if job_id in claims:
+        del claims[job_id]
+        _save_claims(claims)
+        
+    history = []
+    if os.path.exists(AUDIT_HISTORY_FILE):
+        try:
+            with open(AUDIT_HISTORY_FILE) as f:
+                history = json.load(f)
+        except Exception:
+            pass
+            
+    history.append({
+        "job_id": job_id,
+        "auditor_name": data.get("auditor_name"),
+        "auditor_email": data.get("auditor_email"),
+        "score": data.get("score"),
+        "feedback": data.get("feedback"),
+        "timestamp": time.time()
+    })
+    
+    with open(AUDIT_HISTORY_FILE, "w") as f:
+        json.dump(history, f)
+        
+    return JSONResponse(content={"status": "success"})
+
+@app.get("/api/audit/history")
+async def get_audit_history():
+    history = []
+    if os.path.exists(AUDIT_HISTORY_FILE):
+        try:
+            with open(AUDIT_HISTORY_FILE) as f:
+                history = json.load(f)
+        except Exception:
+            pass
+    return JSONResponse(content=history)
 
 if __name__ == "__main__":
     import uvicorn # type: ignore

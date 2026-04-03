@@ -7,7 +7,7 @@ class SubtitleResult(BaseModel):
     odia_srt: str = Field(description="The complete SRT subtitle string translated into Odia")
 
 class MinimalAnalysisResult(BaseModel):
-    call_category: str = Field(description="One of: 'Fee Follow-up', 'Lead Inquiry', 'Technical Issue', 'General Support', 'Complaint', 'Sponsorship'")
+    call_category: str = Field(description="One of: 'CG-Student', 'Lead Inquiry', 'Technical Issue', 'General Support', 'Complaint', 'Sponsorship'")
     sentiment: str = Field(description="User's mood: 'Positive', 'Neutral', 'Frustrated', 'Angry'")
     counselor_feedback: str = Field(description="Detailed feedback on counselor's performance (2-3 sentences)")
     key_points: List[str] = Field(description="3-5 bullet points of key topics discussed")
