@@ -1,0 +1,15 @@
+__pycache__/
+.env
+service_account.json
+ai_transcriber_drive_cache.json
+ignore_old.py
+temp/
+venv/
+.venv/
+.pytest_cache/
+ffmpeg/
+dist/
+build/
+*.pyc
+.vscode/
+.idea/
